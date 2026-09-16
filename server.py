@@ -16,6 +16,7 @@ WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 WHATSAPP_API_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+PORT = int(os.getenv("PORT", "8000"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("whatsapp-mcp")
@@ -301,4 +302,4 @@ async def check_phone_number_status() -> str:
 
 # ── Run ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    mcp.run(transport="sse", host="0.0.0.0", port=PORT)
