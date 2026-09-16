@@ -23,7 +23,6 @@ logger = logging.getLogger("whatsapp-mcp")
 
 mcp = FastMCP(
     "WhatsApp MCP Server",
-    description="Send WhatsApp messages via Meta Cloud API - bulk, template, and free-form.",
     host="0.0.0.0",
     port=PORT,
 )
