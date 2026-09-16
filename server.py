@@ -8,8 +8,13 @@ import os
 import json
 import logging
 import httpx
+import uvicorn
 from typing import Any
 from mcp.server.fastmcp import FastMCP
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.routing import Route, Mount
 
 # -- Config --
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
@@ -21,11 +26,7 @@ PORT = int(os.getenv("PORT", "8000"))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("whatsapp-mcp")
 
-mcp = FastMCP(
-    "WhatsApp MCP Server",
-    host="0.0.0.0",
-    port=PORT,
-)
+mcp = FastMCP("WhatsApp MCP Server")
 
 
 # -- Helpers --
@@ -301,7 +302,34 @@ async def check_phone_number_status() -> str:
     return json.dumps(result, indent=2)
 
 
-# -- Run --
+# -- SSE transport with proxy-header support for Railway --
+sse = SseServerTransport("/messages/")
+
+
+async def handle_sse(request: Request):
+    async with sse.connect_sse(
+        request.scope, request.receive, request._send
+    ) as (read_stream, write_stream):
+        await mcp._mcp_server.run(
+            read_stream,
+            write_stream,
+            mcp._mcp_server.create_initialization_options(),
+        )
+
+
+app = Starlette(
+    routes=[
+        Route("/sse", endpoint=handle_sse),
+        Mount("/messages/", app=sse.handle_post_message),
+    ],
+)
+
 if __name__ == "__main__":
     logger.info(f"Starting WhatsApp MCP Server on port {PORT}")
-    mcp.run(transport="sse")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=PORT,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
