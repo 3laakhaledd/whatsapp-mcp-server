@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
-Meta WhatsApp Cloud API — MCP Server
+Meta WhatsApp Cloud API - MCP Server
 Connects to ClickUp Brain via MCP Connect for bulk WhatsApp messaging.
+Uses Starlette SSE transport for remote connections.
 """
 
 import os
 import json
 import logging
 import httpx
+import uvicorn
 from typing import Any
 from mcp.server.fastmcp import FastMCP
+from starlette.applications import Starlette
+from starlette.routing import Mount, Route
+from starlette.responses import JSONResponse
+from mcp.server.sse import SseServerTransport
 
-# ── Config ────────────────────────────────────────────────────────────
+# -- Config --
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 WHATSAPP_API_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
@@ -23,11 +29,11 @@ logger = logging.getLogger("whatsapp-mcp")
 
 mcp = FastMCP(
     "WhatsApp MCP Server",
-    description="Send WhatsApp messages via Meta Cloud API — bulk, template, and free-form.",
+    description="Send WhatsApp messages via Meta Cloud API - bulk, template, and free-form.",
 )
 
 
-# ── Helpers ───────────────────────────────────────────────────────────
+# -- Helpers --
 def _headers() -> dict:
     return {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -51,7 +57,7 @@ async def _get(path: str, params: dict | None = None) -> dict:
         return resp.json()
 
 
-# ── Tools ─────────────────────────────────────────────────────────────
+# -- Tools --
 
 @mcp.tool()
 async def send_text_message(to: str, body: str, preview_url: bool = False) -> str:
@@ -300,6 +306,34 @@ async def check_phone_number_status() -> str:
     return json.dumps(result, indent=2)
 
 
-# ── Run ───────────────────────────────────────────────────────────────
+# -- Health check --
+async def health(request):
+    return JSONResponse({"status": "ok", "server": "WhatsApp MCP Server"})
+
+
+# -- SSE Transport + Starlette app --
+sse = SseServerTransport("/messages/")
+
+
+async def handle_sse(request):
+    async with sse.connect_sse(
+        request.scope, request.receive, request._send
+    ) as streams:
+        await mcp._mcp_server.run(
+            streams[0], streams[1], mcp._mcp_server.create_initialization_options()
+        )
+
+
+app = Starlette(
+    debug=False,
+    routes=[
+        Route("/health", health),
+        Route("/sse", endpoint=handle_sse),
+        Mount("/messages/", app=sse.handle_post_message),
+    ],
+)
+
+
 if __name__ == "__main__":
-    mcp.run(transport="sse", host="0.0.0.0", port=PORT)
+    logger.info(f"Starting WhatsApp MCP Server on port {PORT}")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
