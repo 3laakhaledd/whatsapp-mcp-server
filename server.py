@@ -22,11 +22,49 @@ WHATSAPP_API_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 PORT = int(os.getenv("PORT", "8000"))
+RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("whatsapp-mcp")
 
 mcp = FastMCP("WhatsApp MCP Server")
+
+
+# -- Middleware to fix host behind Railway reverse proxy --
+class ForwardedHostMiddleware:
+    """Rewrite the ASGI scope host so request.base_url returns the public URL.
+
+    uvicorn proxy_headers only handles X-Forwarded-Proto (scheme) and
+    X-Forwarded-For (client IP). It does NOT touch the host, so
+    SseServerTransport builds callback URLs like https://0.0.0.0:8000/...
+    which the remote client can never reach.
+
+    Priority: RAILWAY_PUBLIC_DOMAIN env var > X-Forwarded-Host header.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            # Determine the real public host
+            public_host = RAILWAY_PUBLIC_DOMAIN
+            if not public_host:
+                headers = dict(scope.get("headers", []))
+                fwd = headers.get(b"x-forwarded-host")
+                if fwd:
+                    public_host = fwd.decode("latin-1")
+
+            if public_host:
+                # Rewrite the host header so Starlette sees the public domain
+                scope["headers"] = [
+                    (k, public_host.encode("latin-1")) if k == b"host" else (k, v)
+                    for k, v in scope["headers"]
+                ]
+                # Also force HTTPS scheme
+                scope["scheme"] = "https"
+
+        await self.app(scope, receive, send)
 
 
 # -- Helpers --
@@ -302,7 +340,7 @@ async def check_phone_number_status() -> str:
     return json.dumps(result, indent=2)
 
 
-# -- SSE transport with proxy-header support for Railway --
+# -- SSE transport --
 sse = SseServerTransport("/messages/")
 
 
@@ -317,12 +355,15 @@ async def handle_sse(request: Request):
         )
 
 
-app = Starlette(
+starlette_app = Starlette(
     routes=[
         Route("/sse", endpoint=handle_sse),
         Mount("/messages/", app=sse.handle_post_message),
     ],
 )
+
+# Wrap with middleware so request.base_url returns the public Railway URL
+app = ForwardedHostMiddleware(starlette_app)
 
 if __name__ == "__main__":
     logger.info(f"Starting WhatsApp MCP Server on port {PORT}")
