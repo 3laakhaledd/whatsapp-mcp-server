@@ -8,13 +8,8 @@ import os
 import json
 import logging
 import httpx
-import uvicorn
 from typing import Any
 from mcp.server.fastmcp import FastMCP
-from mcp.server.sse import SseServerTransport
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.routing import Route, Mount
 
 # -- Config --
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
@@ -22,49 +17,15 @@ WHATSAPP_API_BASE = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 PORT = int(os.getenv("PORT", "8000"))
-RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("whatsapp-mcp")
 
-mcp = FastMCP("WhatsApp MCP Server")
-
-
-# -- Middleware to fix host behind Railway reverse proxy --
-class ForwardedHostMiddleware:
-    """Rewrite the ASGI scope host so request.base_url returns the public URL.
-
-    uvicorn proxy_headers only handles X-Forwarded-Proto (scheme) and
-    X-Forwarded-For (client IP). It does NOT touch the host, so
-    SseServerTransport builds callback URLs like https://0.0.0.0:8000/...
-    which the remote client can never reach.
-
-    Priority: RAILWAY_PUBLIC_DOMAIN env var > X-Forwarded-Host header.
-    """
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] in ("http", "websocket"):
-            # Determine the real public host
-            public_host = RAILWAY_PUBLIC_DOMAIN
-            if not public_host:
-                headers = dict(scope.get("headers", []))
-                fwd = headers.get(b"x-forwarded-host")
-                if fwd:
-                    public_host = fwd.decode("latin-1")
-
-            if public_host:
-                # Rewrite the host header so Starlette sees the public domain
-                scope["headers"] = [
-                    (k, public_host.encode("latin-1")) if k == b"host" else (k, v)
-                    for k, v in scope["headers"]
-                ]
-                # Also force HTTPS scheme
-                scope["scheme"] = "https"
-
-        await self.app(scope, receive, send)
+mcp = FastMCP(
+    "WhatsApp MCP Server",
+    host="0.0.0.0",
+    port=PORT,
+)
 
 
 # -- Helpers --
@@ -340,37 +301,7 @@ async def check_phone_number_status() -> str:
     return json.dumps(result, indent=2)
 
 
-# -- SSE transport --
-sse = SseServerTransport("/messages/")
-
-
-async def handle_sse(request: Request):
-    async with sse.connect_sse(
-        request.scope, request.receive, request._send
-    ) as (read_stream, write_stream):
-        await mcp._mcp_server.run(
-            read_stream,
-            write_stream,
-            mcp._mcp_server.create_initialization_options(),
-        )
-
-
-starlette_app = Starlette(
-    routes=[
-        Route("/sse", endpoint=handle_sse),
-        Mount("/messages/", app=sse.handle_post_message),
-    ],
-)
-
-# Wrap with middleware so request.base_url returns the public Railway URL
-app = ForwardedHostMiddleware(starlette_app)
-
+# -- Run --
 if __name__ == "__main__":
     logger.info(f"Starting WhatsApp MCP Server on port {PORT}")
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=PORT,
-        proxy_headers=True,
-        forwarded_allow_ips="*",
-    )
+    mcp.run(transport="streamable-http")
