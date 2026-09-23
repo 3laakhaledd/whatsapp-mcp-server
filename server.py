@@ -3,6 +3,7 @@
 Meta WhatsApp Cloud API + Facebook Page Tools - MCP Server
 Connects to ClickUp Brain via MCP Connect for bulk WhatsApp messaging
 and Facebook Page / Instagram media lookups for ad creation.
+Also reads Facebook Messenger and Instagram Direct conversations.
 """
 
 import os
@@ -414,6 +415,205 @@ async def list_page_videos(
 
 
 # ============================================================
+# Facebook Conversations / Messenger Inbox
+# ============================================================
+
+@mcp.tool()
+async def fb_list_conversations(limit: int = 25, after: str = "") -> str:
+    """
+    List recent Facebook Page conversations (Messenger inbox).
+    Returns participant names, message count, and last update time.
+    Use this to find leads who messaged the Page.
+
+    Args:
+        limit: Number of conversations to return (max 100, default 25)
+        after: Pagination cursor from a previous response to get the next page
+    """
+    if not META_PAGE_ID:
+        return json.dumps({"error": "META_PAGE_ID not configured"})
+    params: dict[str, Any] = {
+        "fields": "participants,updated_time,message_count,id",
+        "limit": min(limit, 100),
+    }
+    if after:
+        params["after"] = after
+    try:
+        result = await _graph_get(f"{META_PAGE_ID}/conversations", params)
+    except httpx.HTTPStatusError as e:
+        return json.dumps({"error": f"Graph API error: {e.response.status_code} {e.response.text}"})
+    conversations = result.get("data", [])
+    paging = result.get("paging", {})
+    next_cursor = paging.get("cursors", {}).get("after", "")
+    has_more = bool(paging.get("next"))
+    output = []
+    for conv in conversations:
+        participants = [
+            {"name": p.get("name", ""), "id": p.get("id", "")}
+            for p in conv.get("participants", {}).get("data", [])
+        ]
+        output.append({
+            "conversation_id": conv.get("id"),
+            "participants": participants,
+            "message_count": conv.get("message_count"),
+            "updated_time": conv.get("updated_time"),
+        })
+    return json.dumps({
+        "conversations": output,
+        "count": len(output),
+        "has_more": has_more,
+        "next_cursor": next_cursor if has_more else None,
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+async def fb_get_conversation_messages(conversation_id: str, limit: int = 10, after: str = "") -> str:
+    """
+    Get messages from a specific Facebook Page conversation.
+
+    Args:
+        conversation_id: The conversation ID from fb_list_conversations
+        limit: Number of messages to return (max 100, default 10)
+        after: Pagination cursor for next page
+    """
+    params: dict[str, Any] = {
+        "fields": "message,from,created_time,attachments",
+        "limit": min(limit, 100),
+    }
+    if after:
+        params["after"] = after
+    try:
+        result = await _graph_get(f"{conversation_id}/messages", params)
+    except httpx.HTTPStatusError as e:
+        return json.dumps({"error": f"Graph API error: {e.response.status_code} {e.response.text}"})
+    messages = result.get("data", [])
+    paging = result.get("paging", {})
+    next_cursor = paging.get("cursors", {}).get("after", "")
+    has_more = bool(paging.get("next"))
+    output = []
+    for msg in messages:
+        output.append({
+            "id": msg.get("id"),
+            "from": msg.get("from", {}),
+            "message": msg.get("message", ""),
+            "created_time": msg.get("created_time"),
+        })
+    return json.dumps({
+        "messages": output,
+        "count": len(output),
+        "has_more": has_more,
+        "next_cursor": next_cursor if has_more else None,
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+async def fb_get_participant_profile(user_id: str) -> str:
+    """
+    Get a Facebook user profile from a Page conversation (name, profile pic).
+    Only works for users who have messaged the Page.
+
+    Args:
+        user_id: The participant user ID from fb_list_conversations or fb_get_conversation_messages
+    """
+    try:
+        result = await _graph_get(user_id, {"fields": "name,first_name,last_name,profile_pic"})
+    except httpx.HTTPStatusError as e:
+        return json.dumps({"error": f"Graph API error: {e.response.status_code} {e.response.text}"})
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+# ============================================================
+# Instagram Conversations / Direct Inbox
+# ============================================================
+
+@mcp.tool()
+async def ig_list_conversations(limit: int = 25, after: str = "") -> str:
+    """
+    List recent Instagram Direct conversations.
+    Returns participant usernames and last update time.
+    Use this to find leads who messaged the Instagram account.
+
+    Args:
+        limit: Number of conversations to return (max 100, default 25)
+        after: Pagination cursor from a previous response to get the next page
+    """
+    ig_id = META_INSTAGRAM_ACCOUNT_ID
+    if not ig_id:
+        return json.dumps({"error": "META_INSTAGRAM_ACCOUNT_ID not configured"})
+    params: dict[str, Any] = {
+        "fields": "participants,updated_time,id",
+        "platform": "instagram",
+        "limit": min(limit, 100),
+    }
+    if after:
+        params["after"] = after
+    try:
+        result = await _graph_get(f"{ig_id}/conversations", params)
+    except httpx.HTTPStatusError as e:
+        return json.dumps({"error": f"Graph API error: {e.response.status_code} {e.response.text}"})
+    conversations = result.get("data", [])
+    paging = result.get("paging", {})
+    next_cursor = paging.get("cursors", {}).get("after", "")
+    has_more = bool(paging.get("next"))
+    output = []
+    for conv in conversations:
+        participants = [
+            {"name": p.get("name", ""), "username": p.get("username", ""), "id": p.get("id", "")}
+            for p in conv.get("participants", {}).get("data", [])
+        ]
+        output.append({
+            "conversation_id": conv.get("id"),
+            "participants": participants,
+            "updated_time": conv.get("updated_time"),
+        })
+    return json.dumps({
+        "conversations": output,
+        "count": len(output),
+        "has_more": has_more,
+        "next_cursor": next_cursor if has_more else None,
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+async def ig_get_conversation_messages(conversation_id: str, limit: int = 10, after: str = "") -> str:
+    """
+    Get messages from a specific Instagram Direct conversation.
+
+    Args:
+        conversation_id: The conversation ID from ig_list_conversations
+        limit: Number of messages to return (max 100, default 10)
+        after: Pagination cursor for next page
+    """
+    params: dict[str, Any] = {
+        "fields": "message,from,created_time",
+        "limit": min(limit, 100),
+    }
+    if after:
+        params["after"] = after
+    try:
+        result = await _graph_get(f"{conversation_id}/messages", params)
+    except httpx.HTTPStatusError as e:
+        return json.dumps({"error": f"Graph API error: {e.response.status_code} {e.response.text}"})
+    messages = result.get("data", [])
+    paging = result.get("paging", {})
+    next_cursor = paging.get("cursors", {}).get("after", "")
+    has_more = bool(paging.get("next"))
+    output = []
+    for msg in messages:
+        output.append({
+            "id": msg.get("id"),
+            "from": msg.get("from", {}),
+            "message": msg.get("message", ""),
+            "created_time": msg.get("created_time"),
+        })
+    return json.dumps({
+        "messages": output,
+        "count": len(output),
+        "has_more": has_more,
+        "next_cursor": next_cursor if has_more else None,
+    }, indent=2, ensure_ascii=False)
+
+
+# ============================================================
 # Instagram Tools
 # ============================================================
 
@@ -530,10 +730,13 @@ async def health(request: Request):
         "status": "ok",
         "transport": "sse",
         "sse_endpoint": "/sse",
+        "tools_count": 17,
         "tools": [
             "WhatsApp: send_text_message, send_template_message, send_bulk_text_messages, send_bulk_template_messages, send_media_message, get_message_templates, check_phone_number_status",
             "Facebook Page: list_page_published_posts, list_page_videos",
+            "Facebook Conversations: fb_list_conversations, fb_get_conversation_messages, fb_get_participant_profile",
             "Instagram: list_instagram_media, get_instagram_media_by_shortcode",
+            "Instagram Conversations: ig_list_conversations, ig_get_conversation_messages",
         ],
     })
 
