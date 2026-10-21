@@ -6,5 +6,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py .
+COPY webhook_proxy.py .
 
-CMD ["python", "server.py"]
+CMD ["python", "webhook_proxy.py"]

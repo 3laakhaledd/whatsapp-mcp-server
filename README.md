@@ -1,71 +1,55 @@
 # WhatsApp MCP Server — Meta Cloud API
 
-An MCP (Model Context Protocol) server that connects Meta's WhatsApp Cloud API to ClickUp Brain via MCP Connect. Send bulk WhatsApp messages, template messages, and media directly from ClickUp.
+An MCP (Model Context Protocol) server that connects Meta's WhatsApp Cloud API to ClickUp Brain via MCP Connect. Send WhatsApp messages and retain Meta delivery receipts for troubleshooting.
 
-## Tools
+## WhatsApp tools
 
 | Tool | Description |
 |------|-------------|
 | `send_text_message` | Send a free-form text to one recipient |
 | `send_template_message` | Send an approved template to one recipient |
 | `send_bulk_text_messages` | Send the same text to multiple recipients |
-| `send_bulk_template_messages` | Send a template to multiple recipients (with per-recipient personalisation) |
+| `send_bulk_template_messages` | Send a template to multiple recipients |
 | `send_media_message` | Send image, video, document, or audio |
 | `get_message_templates` | List approved templates from your WABA |
 | `check_phone_number_status` | Check phone number quality and status |
 
-## Setup
+## Meta delivery webhooks
 
-### 1. Meta Business Prerequisites
+Railway runs `webhook_proxy.py`, which keeps the MCP endpoints and adds:
 
-1. Go to [Meta for Developers](https://developers.facebook.com/) and create an app (type: Business).
-2. Add the **WhatsApp** product.
-3. In WhatsApp > API Setup, note your:
-   - **Phone Number ID**
-   - **WhatsApp Business Account ID**
-4. Generate a **Permanent Access Token** (System User > Generate Token with `whatsapp_business_messaging` and `whatsapp_business_management` permissions).
+- `GET /webhook` for Meta verification
+- `POST /webhook` for signed delivery/status callbacks
+- `GET /webhook/status/{message_id}` for a retained receipt lookup
 
-### 2. Environment Variables
+Set these Railway variables:
 
-Copy `.env.example` to `.env` and fill in your credentials:
-
-```bash
-cp .env.example .env
+```text
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=<same value entered in Meta webhook settings>
+WHATSAPP_APP_SECRET=<Meta app secret>
+WHATSAPP_RECEIPTS_DB=/data/whatsapp_receipts.sqlite3
 ```
 
-### 3. Install & Run
+Attach the Meta `messages` webhook field to the WABA. For persistence across Railway restarts, mount a Railway volume at `/data`. The app rejects unsigned webhook callbacks unless `WEBHOOK_ALLOW_UNSIGNED=true` is explicitly set for local testing.
+
+## Setup
+
+1. In Meta for Developers, add the WhatsApp product and note the Phone Number ID and WABA ID.
+2. Generate a permanent token with `whatsapp_business_messaging` and `whatsapp_business_management`.
+3. Set the variables in `.env` or Railway.
+4. Deploy with `python webhook_proxy.py`.
+5. Configure Meta's callback URL as `https://<your-domain>/webhook` and subscribe to `messages`.
+
+## Local run
 
 ```bash
 pip install -r requirements.txt
-python server.py
+python webhook_proxy.py
 ```
 
-### 4. Connect to ClickUp Brain
+## ClickUp Brain connection
 
-1. In ClickUp, go to **Settings > Brain > MCP Connect**.
-2. Add a new MCP server connection.
-3. Point it to this server (stdio transport).
-
-### 5. Deploy (Recommended)
-
-For always-on access, deploy to [Railway](https://railway.app), [Render](https://render.com), or any cloud provider:
-
-```bash
-# Railway one-click
-railway init
-railway up
-```
-
-## Usage Examples
-
-**Bulk text to a list:**
-> "Send 'Your order is confirmed!' to +201090840870 and +201234567890"
-
-**Template with personalisation:**
-> "Send the 'order_update' template to these 5 numbers, each with their order ID"
-
-**Media message:**
-> "Send this PDF to +201090840870 via WhatsApp"
+Point MCP Connect to the Railway service's SSE endpoint. The health endpoint is `/` and reports the running transport.
 
 ## License
 
